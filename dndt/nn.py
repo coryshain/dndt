@@ -27,10 +27,11 @@ def get_dnn_model(
         input_dropout=None,
         temporal_dropout=None,
         reg_scale=1.,
-        sensor_filter_scale=None,
         use_glove=False,
         use_resnet=False,
         use_locally_connected=False,
+        use_sensor_mask=False,
+        sensor_mask_regularizer_scale=None,
         use_time_mask=False,
         time_mask_regularizer_scale=None,
         independent_channels=False,
@@ -53,8 +54,8 @@ def get_dnn_model(
     noise_shape = [1, 1, None]
 
     layers = []
-    if sensor_filter_scale:
-        layers.append(SensorFilter(rate=sensor_filter_scale))
+    if use_sensor_mask:
+        layers.append(TrainableTimeMask(rate=sensor_mask_regularizer_scale))
     if input_dropout:
         layers.append(tf.keras.layers.Dropout(input_dropout, noise_shape=noise_shape))
     if temporal_dropout:
@@ -609,43 +610,44 @@ class L2LayerNormalization(tf.keras.layers.Layer):
 
 
 @tf.keras.utils.register_keras_serializable()
-class SensorFilter(tf.keras.layers.Layer):
+class TrainableSensorMask(tf.keras.layers.Layer):
     def __init__(
             self,
             rate=None,
             **kwargs
     ):
-        super(SensorFilter, self).__init__(**kwargs)
+        super(TrainableSensorMask, self).__init__(**kwargs)
 
         self.rate = rate
-        if self.rate:
-            self.w_regularizer = tf.keras.regularizers.L1(self.rate)
-        else:
-            self.w_regularizer = None
 
     def build(self, input_shape):
         ndim = int(input_shape[-1])
+        if self.rate:
+            regularizer = tf.keras.regularizers.L2(self.rate / ndim)
+        else:
+            regularizer = None
         self.w = self.add_weight(
-            name='filter_weights',
+            name='sensor_mask',
             shape=(ndim,),
-            initializer='ones',
-            regularizer=self.w_regularizer
+            initializer='zeros',
+            regularizer=regularizer
         )
 
         self.built = True
 
     def call(self, inputs, training=False):
-        x = inputs
-        w = self.w
-        w = tf.tanh(w)
-        while len(w.shape) < len(x.shape):
-            w = w[None, ...]
-        x = x * w
+        return inputs
 
-        return x
+    def compute_mask(self, inputs, mask=None):
+        input_shape = inputs.shape
+        attn = tf.nn.softmax(self.w)
+        while len(attn.shape) < len(input_shape):
+            attn = attn[None, ...]
+        nsensors = tf.cast(tf.shape(self.w)[-1], dtype=tf.float32)
+        return attn * nsensors
 
     def get_config(self):
-        config = super(SensorFilter, self).get_config()
+        config = super(TrainableSensorMask, self).get_config()
         config.update({
             'rate': self.rate
         })
@@ -667,7 +669,7 @@ class TrainableTimeMask(tf.keras.layers.Layer):
     def build(self, input_shape):
         ndim = int(input_shape[-2])
         if self.rate:
-            regularizer = tf.keras.regularizers.L2(self.rate / ndim)
+            regularizer = tf.keras.regularizers.L1(self.rate / ndim)
         else:
             regularizer = None
         self.w = self.add_weight(
@@ -680,7 +682,6 @@ class TrainableTimeMask(tf.keras.layers.Layer):
         self.built = True
 
     def call(self, inputs, training=False):
-        # tf.print('w', tf.squeeze(self.w), 'attn', tf.nn.softmax(self.w), summarize=20)
         return inputs
 
     def compute_mask(self, inputs, mask=None):

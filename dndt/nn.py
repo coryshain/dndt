@@ -55,7 +55,7 @@ def get_dnn_model(
 
     layers = []
     if use_sensor_mask:
-        layers.append(TrainableTimeMask(rate=sensor_mask_regularizer_scale))
+        layers.append(TrainableSensorMask(rate=sensor_mask_regularizer_scale))
     if input_dropout:
         layers.append(tf.keras.layers.Dropout(input_dropout, noise_shape=noise_shape))
     if temporal_dropout:
@@ -182,11 +182,17 @@ def get_dnn_model(
             if dropout:
                 layers.append(tf.keras.layers.Dropout(dropout, noise_shape=noise_shape))
     for i in range(n_projection_layers):
+        if i < n_projection_layers - 1:
+            proj_units = n_units
+            proj_activation = inner_activation
+        else:
+            proj_units = n_outputs
+            proj_activation = output_activation
         if variational:
             layers.append(
                 DenseFlipout(
-                    n_outputs,
-                    activation=output_activation,
+                    proj_units,
+                    activation=proj_activation,
                     n_train=n_train
                 )
             )
@@ -195,7 +201,7 @@ def get_dnn_model(
                 tf.keras.layers.Dense(
                     n_outputs,
                     kernel_regularizer=kernel_regularizer,
-                    activation=output_activation
+                    activation=proj_activation
                 )
             )
         if i < n_projection_layers - 1:
@@ -636,15 +642,13 @@ class TrainableSensorMask(tf.keras.layers.Layer):
         self.built = True
 
     def call(self, inputs, training=False):
-        return inputs
-
-    def compute_mask(self, inputs, mask=None):
         input_shape = inputs.shape
         attn = tf.nn.softmax(self.w)
         while len(attn.shape) < len(input_shape):
             attn = attn[None, ...]
-        nsensors = tf.cast(tf.shape(self.w)[-1], dtype=tf.float32)
-        return attn * nsensors
+        nsensors = tf.cast(tf.shape(self.w)[0], dtype=tf.float32)
+
+        return attn * inputs * nsensors
 
     def get_config(self):
         config = super(TrainableSensorMask, self).get_config()

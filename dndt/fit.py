@@ -116,6 +116,12 @@ if __name__ == '__main__':
         stderr('Loading %s...\n' % dirpath)
         filename = 'data_d%d_p%s.obj' % (downsample_by, '%s-%s' % tuple(powerband) if powerband else 'None')
         cache_path = os.path.join(dirpath, filename)
+        if not os.path.exists(cache_path):
+            compile_data(
+                dirpath,
+                downsample_by=downsample_by,
+                powerband=powerband
+            )
         with open(cache_path, 'rb') as f:
             data_src = pickle.load(f)
         _data = data_src['data']
@@ -321,16 +327,17 @@ if __name__ == '__main__':
             train_inner_ix = inner_cv_ix['train']
             val_inner_ix = inner_cv_ix['val']
 
-        y_val_lab_inner = y_train_lab_ix[val_inner_ix]
+        y_val_lab_ix_inner = y_train[val_inner_ix]
+        y_val_lab_inner = y_train_lab[val_inner_ix]
         if use_glove:
             y_val_glove_inner = y_train_glove[val_inner_ix]
             y_val_inner = y_val_glove_inner
-            uniq, ix = np.unique(y_val_lab_inner, return_index=True)
+            uniq, ix = np.unique(y_val_lab_ix_inner, return_index=True)
             comparison_set = {}
             for k, val in zip(ix, uniq):
                 comparison_set[val] = y_val_glove_inner[k]
         else:
-            y_val_inner = y_val_lab_inner
+            y_val_inner = y_val_lab_ix_inner
             y_val_glove_inner = None
 
         ds_train = RasterData(
@@ -357,7 +364,9 @@ if __name__ == '__main__':
             contrastive_sampling=bool(contrastive_loss_weight)
         )
         ds_val = None
+        y_val_inner = None
         y_val_lab_inner = None
+        y_val_lab_ix_inner = None
 
     results_dict = {
         'acc': None,
@@ -397,13 +406,13 @@ if __name__ == '__main__':
         loss = 'mse'
         # loss = tf.keras.losses.CosineSimilarity()
         metrics = []
-        if reg_scale or sensor_filter_scale or use_time_mask or variational:
+        if reg_scale or use_sensor_mask or use_time_mask or variational:
             metrics.append('mse')
         metrics.append(tf.keras.metrics.CosineSimilarity(name='sim'))
     else:
         loss = 'sparse_categorical_crossentropy'
         metrics = []
-        if reg_scale or sensor_filter_scale or use_time_mask or variational:
+        if reg_scale or use_sensor_mask or use_time_mask or variational:
             metrics.append('ce')
         metrics.append('acc')
 
@@ -438,6 +447,7 @@ if __name__ == '__main__':
             ema_path,
             ds_val,
             y_val_lab_inner,
+            results_path,
             use_glove=use_glove,
             ix2lab=ix2lab,
             comparison_set=comparison_set,

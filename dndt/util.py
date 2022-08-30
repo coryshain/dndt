@@ -3,6 +3,8 @@ import os
 import re
 import pickle
 import numpy as np
+from scipy.io import loadmat
+import mne
 
 
 def stderr(x):
@@ -97,6 +99,63 @@ def compute_filter_mask(y, filters):
 def normalize(x, axis=-1):
     n = np.linalg.norm(x, axis=axis, keepdims=True)
     return x / n
+
+
+def compile_data(
+        dirpath,
+        downsample_by=1,
+        powerband=None,
+        force_reprocess=False,
+):
+    dirpath = os.path.normpath(dirpath)
+    filename = 'data_d%d_p%s.obj' % (downsample_by, '%s-%s' % tuple(powerband) if powerband else 'None')
+    cache_path = os.path.join(dirpath, filename)
+
+    if force_reprocess or not os.path.exists(cache_path):
+        raster_data = []
+        _labels = None
+        raster_paths = [os.path.join(dirpath, x) for x in os.listdir(dirpath) if x.endswith('mat')]
+        meta = {}
+        for i in range(len(raster_paths)):
+            raster_path = raster_paths[i]
+            stderr('\r  Sensor %d/%d' % (i + 1, len(raster_paths)))
+            raster = loadmat(raster_path, simplify_cells=True)
+            _data = raster['raster_data']
+            if powerband:
+                meta['powerband'] = powerband
+                l, u = powerband
+                _data = mne.io.RawArray(
+                    _data,
+                    mne.create_info([str(x) for x in range(len(_data))], 1000, 'grad'),
+                    verbose=40
+                )
+                _data = _data.filter(l, u, verbose=40) \
+                    .apply_hilbert(envelope=True, verbose=40) \
+                    .get_data()
+            if downsample_by > 1:
+                meta['downsample_by'] = downsample_by
+                b = _data.shape[0]
+                t = _data.shape[1]
+                trim = t % downsample_by
+                _t = t // downsample_by
+                _data = _data[:, trim:].reshape((b, _t, downsample_by)).mean(axis=-1)
+                # num = _data.shape[1] // downsample_by
+                # _data = resample(_data, num, axis=1)
+            raster_data.append(_data)
+            if _labels is None:
+                _labels = raster['raster_labels']
+
+        _data = np.stack(raster_data, axis=1)
+
+        data_src = {
+            'data': _data,
+            'labels': _labels,
+            'meta': meta
+        }
+        with open(cache_path, 'wb') as f:
+            pickle.dump(data_src, f)
+
+        stderr('\n')
 
 
 def compile_cv_ix(data, outdir, niter=1, nfolds=5, force_resample=False):
